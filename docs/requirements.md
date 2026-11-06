@@ -8,10 +8,10 @@ Removed: TUF metadata and libraries, root-key roles, threshold signatures, signa
 
 Still needed from the product owner:
 
-1. Production run.sh requirements. A copy-only sample is now provided at examples/test-package/run.sh; it does not install a working cPGuard application. See docs/test-package.md for the inspected local sample and packaging procedure.
+1. Production run.sh requirements and a reviewed real application installer. The dummy installer and test-package tooling have been removed; no production run.sh is supplied by this source tree.
 2. Confirmed metadata URL and exact allowed archive/CDN hostnames.
 3. Public key A, generated and held on the publisher side. Never send the private key or passphrase.
-4. Installed paths for both updater binaries, the cron schedule, and the log destination; the initial installer creates cron and selects the architecture.
+4. Installed paths for both updater binaries and the cron schedule; the initial installer creates cron and selects the architecture. The agreed result log is now `/opt/cpguard/logs/install_log`; its directory must already exist with safe ownership/permissions.
 5. Supported Linux distributions/versions and disposable native amd64/arm64 test hosts for package/OS compatibility checks.
 
 No independent version API or multi-person root-key custody plan is required for this narrowed implementation. Script success is determined by exit status. Atomic application installation, rollback, OS-specific file selection, and self-replacement must be handled by run.sh if needed.

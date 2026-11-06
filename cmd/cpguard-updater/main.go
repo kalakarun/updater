@@ -1,3 +1,5 @@
+//go:build !cpguardtest
+
 package main
 
 import (
@@ -12,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"syscall"
+	"time"
 
 	"cpguard/updater/internal/durable"
 	"cpguard/updater/internal/installer"
@@ -22,6 +25,8 @@ import (
 	"cpguard/updater/internal/updater"
 	_ "golang.org/x/crypto/x509roots/fallback"
 )
+
+const installLogFile = "/opt/cpguard/logs/install_log"
 
 type logWriter struct{ logger *slog.Logger }
 
@@ -40,7 +45,7 @@ func main() {
 	}
 }
 
-func run(ctx context.Context, arguments []string, logger *slog.Logger) error {
+func run(ctx context.Context, arguments []string, logger *slog.Logger) (failure error) {
 	command := "apply"
 	if len(arguments) > 1 {
 		return errors.New("usage: cpguard-updater [apply|check|bootstrap|version]")
@@ -49,7 +54,7 @@ func run(ctx context.Context, arguments []string, logger *slog.Logger) error {
 		command = arguments[0]
 	}
 	if command == "version" {
-		fmt.Println("cpguard-updater signed-json", runtime.Version(), runtime.GOOS, runtime.GOARCH, "profile="+buildProfile, "swversion="+versionFile, "state="+stateDir)
+		fmt.Println("cpguard-updater signed-json", runtime.Version(), runtime.GOOS, runtime.GOARCH, "profile="+buildProfile.name, "swversion="+buildProfile.versionFile, "state="+buildProfile.stateDir, "log="+installLogFile)
 		return nil
 	}
 	if command != "apply" && command != "check" && command != "bootstrap" {
@@ -61,8 +66,15 @@ func run(ctx context.Context, arguments []string, logger *slog.Logger) error {
 	if os.Geteuid() != 0 {
 		return errors.New("updater must run as root")
 	}
-	if buildProfile != "production" {
-		logger.Warn("manual_test_build", "profile", buildProfile, "swversion", versionFile, "state", stateDir)
+	var result updater.Result
+	if command != "bootstrap" {
+		output, err := openInstallLog()
+		if err != nil {
+			return fmt.Errorf("open updater result log %s: %w", installLogFile, err)
+		}
+		defer func() {
+			failure = finishResultLog(output, result.Outcome, failure, time.Now())
+		}()
 	}
 	config, keyA, err := site.Load()
 	if err != nil {
@@ -89,37 +101,37 @@ func run(ctx context.Context, arguments []string, logger *slog.Logger) error {
 	}
 	defer version.Close()
 	if command == "bootstrap" {
-		data, err := version.Read(versionFile, 128)
+		data, err := version.Read(buildProfile.versionFile, 128)
 		if err != nil {
 			return err
 		}
 		if _, err := release.ParseInstalled(data); err != nil {
 			return err
 		}
-		if err := durable.Protected(filepath.Dir(stateDir), true); err != nil {
+		if err := durable.Protected(filepath.Dir(buildProfile.stateDir), true); err != nil {
 			return err
 		}
-		if err := os.Mkdir(stateDir, 0700); err != nil {
+		if err := os.Mkdir(buildProfile.stateDir, 0700); err != nil {
 			return errors.New("bootstrap requires new state; never delete existing state to bypass this error")
 		}
-		if err := durable.SyncDir(filepath.Dir(stateDir)); err != nil {
+		if err := durable.SyncDir(filepath.Dir(buildProfile.stateDir)); err != nil {
 			return err
 		}
 	}
-	if err := durable.Protected(stateDir, true); err != nil {
+	if err := durable.Protected(buildProfile.stateDir, true); err != nil {
 		return err
 	}
-	lock, err := durable.Lock(filepath.Join(stateDir, "lock"))
+	lock, err := durable.Lock(filepath.Join(buildProfile.stateDir, "lock"))
 	if err != nil {
 		return err
 	}
 	defer lock.Close()
-	statePath := filepath.Join(stateDir, "state.json")
+	statePath := filepath.Join(buildProfile.stateDir, "state.json")
 	if command == "bootstrap" {
 		return state.Initialize(statePath)
 	}
 	for _, oldName := range []string{"metadata", "journal.json", "transaction", "status.json"} {
-		if _, err := os.Lstat(filepath.Join(stateDir, oldName)); !errors.Is(err, os.ErrNotExist) {
+		if _, err := os.Lstat(filepath.Join(buildProfile.stateDir, oldName)); !errors.Is(err, os.ErrNotExist) {
 			return errors.New("legacy TUF/transaction state found; explicit migration is required")
 		}
 	}
@@ -128,12 +140,12 @@ func run(ctx context.Context, arguments []string, logger *slog.Logger) error {
 	}
 	service := updater.Service{
 		KeyA: keyA, MetadataURL: config.MetadataURL, StateFile: statePath,
-		VersionFile: versionFile, TempParent: stateDir,
+		VersionFile: buildProfile.versionFile, TempParent: buildProfile.stateDir,
 		Metadata: metadataClient.DownloadFile, Archives: profileArchives(archives),
 		Install:     profileInstaller(installer.Runner{Log: logWriter{logger}}),
 		ReadVersion: version.Read, StatVersion: version.Stat, WriteVersion: version.Write,
 	}
-	result, err := service.Run(ctx, command == "apply")
+	result, err = service.Run(ctx, command == "apply")
 	if err != nil {
 		return err
 	}

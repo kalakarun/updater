@@ -38,6 +38,8 @@ Archive extraction permits only regular files and directories. It rejects absolu
 
 run.sh has a ten-minute timeout. Its stdout and stderr are each bounded to 1,048,576 bytes and logged. Timeout handling kills the process group; the script must not detach installer children. The updater itself calls no external program other than /bin/sh.
 
+The CLI appends one UTC plain-text result for each check/apply to `/opt/cpguard/logs/install_log`, retaining JSON console output. It validates the existing application log directory before update operations, creates only a missing regular log file, and uses descriptor-relative no-follow appends with file sync. File logging failures return nonzero; a failure after installation cannot roll back application changes. See `operations.md` for status mappings, permissions and failure details.
+
 ## Security boundary
 
 A compromised CDN cannot replace the package or its signed hash without a trusted signing key. It can block downloads or replay still-valid metadata within the limits of the client's recorded state. Expiry assumes a reasonable host clock. Initial updater binaries and their embedded public keys need independently trusted distribution.

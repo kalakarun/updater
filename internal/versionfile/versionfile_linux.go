@@ -30,7 +30,18 @@ func Open(anchor, relative string, allowedUID int) (*File, error) {
 	return openFile(anchor, relative, allowedUID, true)
 }
 
-func openFile(anchor, relative string, allowedUID int, secureAnchor bool) (_ *File, failure error) {
+func openFile(anchor, relative string, allowedUID int, secureAnchor bool) (*File, error) {
+	file, err := openParent(anchor, relative, allowedUID, secureAnchor)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := file.Stat(file.name); err != nil {
+		return nil, errors.Join(err, file.Close())
+	}
+	return file, nil
+}
+
+func openParent(anchor, relative string, allowedUID int, secureAnchor bool) (_ *File, failure error) {
 	if !filepath.IsAbs(anchor) || filepath.Clean(anchor) != anchor || !filepath.IsLocal(relative) || filepath.Clean(relative) != relative || relative == "." || allowedUID < 0 {
 		return nil, errors.New("invalid anchored version path or allowed owner")
 	}
@@ -80,7 +91,7 @@ func openFile(anchor, relative string, allowedUID int, secureAnchor bool) (_ *Fi
 			return nil, err
 		}
 	}
-	if _, err := file.Stat(file.name); err != nil {
+	if err := file.checkDirectories(); err != nil {
 		return nil, err
 	}
 	return file, nil

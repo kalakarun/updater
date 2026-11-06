@@ -9,6 +9,20 @@ import (
 
 type File struct{}
 
+type Appender struct{}
+
+func OpenAppend(anchor, relative string, allowedUID int) (*Appender, error) {
+	return nil, errors.New("application result log integration requires Linux")
+}
+
+func (appender *Appender) Append(data []byte) error {
+	return errors.New("application result log integration requires Linux")
+}
+
+func (appender *Appender) Close() error {
+	return nil
+}
+
 func Open(anchor, relative string, allowedUID int) (*File, error) {
 	return nil, errors.New("application version file integration requires Linux")
 }
