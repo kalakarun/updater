@@ -281,3 +281,95 @@ func TestInstallerMustNotWriteVersion(t *testing.T) {
 		t.Fatal("original version not restored")
 	}
 }
+
+func TestVersionAccessCallbacks(t *testing.T) {
+	for _, scenario := range []string{"check", "success", "installer-failure", "installer-version-write", "persistence-failure"} {
+		t.Run(scenario, func(t *testing.T) {
+			item := setup(t)
+			backing := filepath.Join(item.service.TempParent, "anchored-version")
+			if err := os.Rename(item.service.VersionFile, backing); err != nil {
+				t.Fatal(err)
+			}
+			reads, stats, writes := 0, 0, 0
+			checkName := func(name string) {
+				t.Helper()
+				if name != item.service.VersionFile {
+					t.Fatal("version access escaped configured path", name)
+				}
+			}
+			item.service.ReadVersion = func(name string, maximum int64) ([]byte, error) {
+				checkName(name)
+				reads++
+				return durable.Read(backing, maximum)
+			}
+			item.service.StatVersion = func(name string) (os.FileInfo, error) {
+				checkName(name)
+				stats++
+				return os.Lstat(backing)
+			}
+			item.service.WriteVersion = func(name string, data []byte, mode os.FileMode, uid, gid int) error {
+				checkName(name)
+				writes++
+				if err := durable.Write(backing, data, mode, uid, gid); err != nil {
+					return err
+				}
+				if scenario == "persistence-failure" && writes == 1 {
+					return errors.New("injected persistence error")
+				}
+				return nil
+			}
+			if scenario == "installer-failure" {
+				item.service.Install = func(context.Context, string) error {
+					item.installs++
+					return errors.New("injected installer error")
+				}
+			}
+			if scenario == "installer-version-write" {
+				item.service.Install = func(context.Context, string) error {
+					item.installs++
+					return os.WriteFile(backing, []byte("58900\n"), 0600)
+				}
+			}
+			result, err := item.service.Run(context.Background(), scenario != "check")
+			wantFailure := scenario != "success" && scenario != "check"
+			if (err != nil) != wantFailure {
+				t.Fatal(result, err)
+			}
+			data, err := os.ReadFile(backing)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "58826\n"
+			if scenario == "success" {
+				want = "58900\n"
+			}
+			if string(data) != want || reads == 0 || (scenario != "check" && stats == 0) {
+				t.Fatal("version callbacks not used throughout flow", string(data), reads, stats, writes)
+			}
+			if _, err := os.Lstat(item.service.VersionFile); !errors.Is(err, os.ErrNotExist) {
+				t.Fatal("path-based version access bypassed callbacks", err)
+			}
+		})
+	}
+}
+
+func TestVersionChangeDuringDownloadBlocksInstaller(t *testing.T) {
+	item := setup(t)
+	reads := 0
+	item.service.ReadVersion = func(name string, maximum int64) ([]byte, error) {
+		reads++
+		if reads == 2 {
+			if err := os.WriteFile(name, []byte("58827\n"), 0640); err != nil {
+				return nil, err
+			}
+		}
+		return durable.Read(name, maximum)
+	}
+	if _, err := item.service.Run(context.Background(), true); err == nil || item.installs != 0 {
+		t.Fatal("installer ran with a changed version baseline", item.installs, err)
+	}
+	data, err := os.ReadFile(item.service.VersionFile)
+	if err != nil || string(data) != "58827\n" {
+		t.Fatal("overwrote a version changed before installation", string(data), err)
+	}
+}

@@ -23,9 +23,6 @@ import (
 	_ "golang.org/x/crypto/x509roots/fallback"
 )
 
-const stateDir = "/var/lib/cpguard-updater"
-const versionFile = "/opt/cpguard/app/setup/swversion"
-
 type logWriter struct{ logger *slog.Logger }
 
 func (writer logWriter) Write(data []byte) (int, error) {
@@ -52,7 +49,7 @@ func run(ctx context.Context, arguments []string, logger *slog.Logger) error {
 		command = arguments[0]
 	}
 	if command == "version" {
-		fmt.Println("cpguard-updater signed-json", runtime.Version(), runtime.GOOS, runtime.GOARCH)
+		fmt.Println("cpguard-updater signed-json", runtime.Version(), runtime.GOOS, runtime.GOARCH, "profile="+buildProfile, "swversion="+versionFile, "state="+stateDir)
 		return nil
 	}
 	if command != "apply" && command != "check" && command != "bootstrap" {
@@ -63,6 +60,9 @@ func run(ctx context.Context, arguments []string, logger *slog.Logger) error {
 	}
 	if os.Geteuid() != 0 {
 		return errors.New("updater must run as root")
+	}
+	if buildProfile != "production" {
+		logger.Warn("manual_test_build", "profile", buildProfile, "swversion", versionFile, "state", stateDir)
 	}
 	config, keyA, err := site.Load()
 	if err != nil {
@@ -83,11 +83,13 @@ func run(ctx context.Context, arguments []string, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	if err := durable.Protected(versionFile, false); err != nil {
+	version, err := openVersionFile()
+	if err != nil {
 		return err
 	}
+	defer version.Close()
 	if command == "bootstrap" {
-		data, err := durable.Read(versionFile, 128)
+		data, err := version.Read(versionFile, 128)
 		if err != nil {
 			return err
 		}
@@ -124,7 +126,13 @@ func run(ctx context.Context, arguments []string, logger *slog.Logger) error {
 	if err := durable.Protected(statePath, false); err != nil {
 		return err
 	}
-	service := updater.Service{KeyA: keyA, MetadataURL: config.MetadataURL, StateFile: statePath, VersionFile: versionFile, TempParent: stateDir, Metadata: metadataClient.DownloadFile, Archives: archives, Install: (installer.Runner{Log: logWriter{logger}}).Run}
+	service := updater.Service{
+		KeyA: keyA, MetadataURL: config.MetadataURL, StateFile: statePath,
+		VersionFile: versionFile, TempParent: stateDir,
+		Metadata: metadataClient.DownloadFile, Archives: profileArchives(archives),
+		Install:     profileInstaller(installer.Runner{Log: logWriter{logger}}),
+		ReadVersion: version.Read, StatVersion: version.Stat, WriteVersion: version.Write,
+	}
 	result, err := service.Run(ctx, command == "apply")
 	if err != nil {
 		return err

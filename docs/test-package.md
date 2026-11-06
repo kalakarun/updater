@@ -26,4 +26,32 @@ The shell requires standard Linux tools: uname, find, dirname, stat, id, mkdir, 
 
 For a manual non-root test, create a private parent directory, extract the generated package there, enter its package root, and explicitly set `CPGUARD_TEST_ROOT` to an owned absolute directory named cpguard-updater-test under that parent. The parent must be canonical and not use symlinks; an existing destination must be owned by the invoking user and mode 0700. The production updater uses a controlled environment, so this manual override is not propagated during its normal execution.
 
-Do not run the production updater against the live /opt/cpguard version file just to test this sample. A full updater integration test still needs an agreed disposable host, signed metadata/CDN URL, and public key A. No private signing key is generated or shipped with the test archive.
+Do not run the production updater against the live /opt/cpguard version file just to test this sample. A production HTTPS end-to-end run still needs an agreed disposable host, HTTPS metadata/archive URLs, and public key A. No private signing key is generated or shipped with the test archive.
+
+## Offline signed-flow test
+
+No HTTPS server or CDN upload is needed for the offline integration test. It exercises the shared updater service with local metadata/archive inputs and private native Linux /tmp version/state/output directories. The real installed cPGuard and production updater state are not read or written. Only the repository's byte-exact copy-only run.sh is allowed to execute.
+
+Build the dummy package and sign it using the existing test key A. Adjust /etc/update/app.tar to the actual archive filename. The reserved offline.invalid URL is a schema-valid identifier only: the test never downloads it. This metadata is for offline testing, not publication or the production updater.
+
+```sh
+./dist/cpguard-test-package \
+  --archive /etc/update/app.tar \
+  --out dist/cpguard-offline-test.tar.gz
+
+./dist/cpguard-sign make \
+  --archive dist/cpguard-offline-test.tar.gz \
+  --url https://offline.invalid/cpguard-dummy-test.tar.gz \
+  --version 5.89.00 --sequence 1 --valid-for 24h \
+  --key /root/cpguard-publisher-test/key-a.age \
+  --out /root/cpguard-publisher-test/update_check-offline-1.json
+
+CPGUARD_SAMPLE_ARCHIVE="$PWD/dist/cpguard-offline-test.tar.gz" \
+CPGUARD_SAMPLE_METADATA=/root/cpguard-publisher-test/update_check-offline-1.json \
+CPGUARD_SAMPLE_PUBLIC_KEY=/root/cpguard-publisher-test/key-a.public.txt \
+  go test ./internal/testpackage -run '^TestOfflineSignedSampleFlow$' -count=1 -v
+```
+
+Use fresh output filenames if they already exist. Run within 24 hours, with a correct server clock. The integration test verifies check/install/no-op behavior (temporary swversion 58826 to 58900), signature failure, changed archive bytes, truncated archives and cleanup. The signing private key/passphrase is only used by cpguard-sign, never by the test.
+
+This test substitutes local file transport and an isolated dummy invocation. It does not exercise real HTTPS downloads, certificate validation or the production command's root/path/lock checks and installer environment. Do not run production bootstrap/apply for this offline test. Production behavior and embedded site configuration are unchanged.

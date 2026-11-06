@@ -78,6 +78,32 @@ func TestURLPolicy(t *testing.T) {
 	}
 }
 
+func TestGitHubRawURLPolicy(t *testing.T) {
+	client, err := New(context.Background(), []string{"raw.githubusercontent.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, address := range []string{
+		"https://raw.githubusercontent.com/kalakarun/uptest/main/cpguard/updates.json",
+		"https://raw.githubusercontent.com/kalakarun/uptest/403e6a06a197e2a0ba1b4f24ba9724c3ef47f6c6/cpg-1.0.1.tar.gz",
+	} {
+		if err := client.ValidateURL(address); err != nil {
+			t.Fatal("raw GitHub URL rejected", address, err)
+		}
+	}
+	for _, address := range []string{
+		"https://github.com/kalakarun/uptest/blob/main/cpguard/updates.json",
+		"https://github.com/kalakarun/uptest/raw/main/cpguard/updates.json",
+		"http://raw.githubusercontent.com/kalakarun/uptest/main/cpguard/updates.json",
+		"https://raw.githubusercontent.com.evil.test/kalakarun/uptest/main/cpguard/updates.json",
+		"https://raw.githubusercontent.com/kalakarun/uptest/main/cpguard/updates.json?raw=true",
+	} {
+		if err := client.ValidateURL(address); err == nil {
+			t.Fatal("unsafe GitHub URL accepted", address)
+		}
+	}
+}
+
 func TestMetadataNetworkLimits(t *testing.T) {
 	for _, scenario := range []string{"redirect", "oversized", "duplicate", "trailing", "status", "encoded"} {
 		t.Run(scenario, func(t *testing.T) {

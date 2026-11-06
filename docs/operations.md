@@ -5,10 +5,12 @@
 Edit `internal/site/site.json` before the production build:
 
 - `key_a`: the single base64-encoded 32-byte Ed25519 public key.
-- `metadata_url`: currently the original `https://downloads.opsshield.com/cpguard/update_check.json`; confirm this location.
+- `metadata_url`: currently the GitHub test URL `https://raw.githubusercontent.com/kalakarun/uptest/main/cpguard/updates.json`; replace it with the confirmed production URL before deployment.
 - `allowed_cdn_hosts`: actual archive hostnames only, without schemes, ports, or paths.
 
-These values are embedded in both binaries, not accepted from runtime flags or downloaded JSON. The key_b field has been removed and is rejected as unknown. Private key A and its passphrase must never enter the repository, binaries, or download servers. An empty development key or host list prevents production operations.
+These values are embedded in the updater binaries, not accepted from runtime flags or downloaded JSON. The key_b field has been removed and is rejected as unknown. Private key A and its passphrase must never enter the repository, binaries, or download servers. An empty development key or host list prevents production operations.
+
+The current configuration trusts the user's test public key and allows raw.githubusercontent.com for the GitHub sample test. It is not a production deployment configuration. See github-test.md for signing, publication and isolated live-HTTPS testing without changing installed cPGuard files.
 
 ## Key generation on the Mac
 
@@ -46,9 +48,19 @@ Some operator must renew metadata even when there is no new application release.
 
 ## Customer installation and cron
 
-The existing authenticated initial installer must select x86_64 -> cpguard-updater-amd64 or aarch64 -> cpguard-updater-arm64 using uname -m, and reject other architectures. The updater's installed directory and cron schedule remain to be supplied; do not install a speculative path or schedule.
+The existing authenticated initial installer must select x86_64 -> cpguard-updater-amd64 or aarch64 -> cpguard-updater-arm64 using uname -m, and reject other architectures. The updater's installed directory and cron schedule remain to be supplied; do not install a speculative path or schedule. Install the updater binary and cron configuration in root-owned, non-symlink paths that are not writable by the cpguard account or other unprivileged users. Do not place the root-executed updater in the cpguard-writable application tree. Protecting these deployment paths is the initial installer's responsibility, not an executable-path check performed by the running updater.
 
-Run the selected binary's `bootstrap` command once to create protected sequence state. Then cron runs the selected binary with no arguments or with `apply`, as root. `check` verifies metadata and compares versions without downloading or installing an archive. `version` only reports build/platform information.
+Run the selected binary's `bootstrap` command once to create protected sequence state. Then cron runs the selected binary with no arguments or with `apply`, as root. `check` verifies metadata and compares versions without downloading or installing an archive; accepting a new sequence still updates protected state. `version` reports the build/platform, profile, version-file path and state-directory path without checking for updates.
+
+### Application version ownership
+
+The production updater reads `/opt/cpguard/app/setup/swversion`. `/opt` and its ancestors must remain root-owned, non-symlink and not group/world writable. Below that anchor, the `cpguard/app/setup` directories and regular `swversion` file may belong to root or the UID resolved from the local `cpguard` account. Group/world-writable paths, symlinks and unsupported file types are rejected. If the account does not exist, only root-owned paths are accepted. No ownership change to the installed cPGuard tree is required.
+
+Version access uses pinned directory descriptors, checked path identities and bounded no-follow reads rather than relaxing the root-only state checks. Replacement preserves the version file's original owner, permissions and newline style. `run.sh` must leave `swversion` and its parent directories unchanged; the updater records the new version only after the script succeeds. This does not make the application-owned version a root-trusted security record: the cpguard account can still change its reported version. See `architecture.md` for that trust boundary.
+
+`/var/lib/cpguard-updater` and its sequence state remain root-only and must not be moved beneath the application tree. Do not reset existing state to bypass an error. The separate `cpguardtest` build retains isolated root-owned dummy paths; see `github-test.md`.
+
+For the current sample, installed `58826` means `5.88.26`, which is newer than signed `1.0.1`. A production check/apply therefore reports `up_to_date`, without running the sample installer. Do not lower the real version to force a test; use the isolated dummy-version profile to test installation.
 
 Logs use structured stderr; configure the agreed protected log file or collector in the initial installer/cron integration. The updater does not install cron entries or invoke cron/uname itself.
 

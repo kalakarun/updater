@@ -28,7 +28,9 @@ First installation must invoke bootstrap explicitly. Missing or malformed existi
 
 ## Installation and limits
 
-The installed integer version encodes major*10000 + minor*100 + patch. Missing, empty, or nonnumeric swversion stops installation. Writes preserve the original owner, permissions, and LF/CRLF/no-newline style, using a same-directory temporary file, fsync, rename, and parent-directory sync.
+The installed integer version encodes major*10000 + minor*100 + patch. Missing, empty, or nonnumeric swversion stops installation. The production path is `/opt/cpguard/app/setup/swversion`. `/opt` and its ancestors must be root-owned, non-symlink and not group/world writable. Below that anchor, directories and the version file may be owned by root or the UID looked up from the local `cpguard` account; without that account, only root ownership is accepted. Symlinks, group/world-writable paths and unsupported file types are rejected. This application-specific policy does not relax root-only validation for updater state.
+
+The version-file handle pins directory descriptors, checks path identities and uses bounded no-follow reads. Writes create an exclusive temporary file relative to the pinned parent, sync its contents, preserve the original owner and permissions, rename within that directory and sync the parent. They retain LF/CRLF/no-newline style. The root installer script must leave swversion and its parent directories to the updater; a reported script failure does not undo other application changes it may already have made.
 
 Metadata is capped at 262,144 bytes, with 32 levels of JSON nesting and a 60-second request budget. Transient failures have at most three attempts within that budget. Archives have a 15-minute timeout and no within-run retries. Both downloads reject redirects and content encoding and require normal TLS certificate checks. The updater embeds maintained fallback CA roots for systems without a CA bundle.
 
@@ -39,5 +41,7 @@ run.sh has a ten-minute timeout. Its stdout and stderr are each bounded to 1,048
 ## Security boundary
 
 A compromised CDN cannot replace the package or its signed hash without a trusted signing key. It can block downloads or replay still-valid metadata within the limits of the client's recorded state. Expiry assumes a reasonable host clock. Initial updater binaries and their embedded public keys need independently trusted distribution.
+
+An application-owned swversion is a compatibility/status record, not a root-trusted installed-version authority. The cpguard account can change it, suppress updates by reporting a higher version, or influence the version comparison by reporting a lower one. Protected sequence state rejects metadata replay but does not independently record or prove the installed application version, and cannot guarantee version-based rollback prevention after compromise of that account. Descriptor-relative operations constrain filesystem access; they do not prevent an owner from changing its own application files. Keep the root-executed updater binary, cron configuration and security state outside the cpguard-writable tree, in root-protected paths supplied by the initial installer.
 
 Compromise of private key A can authorize a malicious release. One key reduces the number of secrets to manage but is not risk-free, and there is no spare key for recovery. A signed run.sh executes as root. There is no application rollback or crash-recovery journal in this reduced flow. Root compromise, irreversible installer changes, and storage failure are outside its guarantees.

@@ -33,6 +33,8 @@ type Service struct {
 	Archives     Archives
 	Install      func(context.Context, string) error
 	Now          func() time.Time
+	ReadVersion  func(string, int64) ([]byte, error)
+	StatVersion  func(string) (os.FileInfo, error)
 	WriteVersion func(string, []byte, os.FileMode, int, int) error
 }
 
@@ -65,7 +67,15 @@ func (service Service) Run(ctx context.Context, install bool) (result Result, fa
 	if err := state.Accept(service.StateFile, verified); err != nil {
 		return result, err
 	}
-	old, err := durable.Read(service.VersionFile, 128)
+	read := service.ReadVersion
+	if read == nil {
+		read = durable.Read
+	}
+	stat := service.StatVersion
+	if stat == nil {
+		stat = os.Lstat
+	}
+	old, err := read(service.VersionFile, 128)
 	if err != nil {
 		return result, err
 	}
@@ -85,7 +95,7 @@ func (service Service) Run(ctx context.Context, install bool) (result Result, fa
 	if !install {
 		return result, nil
 	}
-	info, err := os.Lstat(service.VersionFile)
+	info, err := stat(service.VersionFile)
 	if err != nil {
 		return result, err
 	}
@@ -94,10 +104,23 @@ func (service Service) Run(ctx context.Context, install bool) (result Result, fa
 	if write == nil {
 		write = durable.Write
 	}
+	unchanged := func() (bool, error) {
+		current, err := read(service.VersionFile, 128)
+		if err != nil {
+			return false, err
+		}
+		currentInfo, err := stat(service.VersionFile)
+		if err != nil {
+			return false, err
+		}
+		currentUID, currentGID := durable.Ownership(currentInfo)
+		return bytes.Equal(current, old) && os.SameFile(info, currentInfo) &&
+			currentUID == uid && currentGID == gid && currentInfo.Mode().Perm() == info.Mode().Perm(), nil
+	}
 	restore := func() error {
-		current, err := durable.Read(service.VersionFile, 128)
+		current, err := read(service.VersionFile, 128)
 		if err == nil && bytes.Equal(current, old) {
-			currentInfo, statErr := os.Lstat(service.VersionFile)
+			currentInfo, statErr := stat(service.VersionFile)
 			if statErr == nil {
 				currentUID, currentGID := durable.Ownership(currentInfo)
 				if currentUID == uid && currentGID == gid && currentInfo.Mode().Perm() == info.Mode().Perm() {
@@ -136,12 +159,14 @@ func (service Service) Run(ctx context.Context, install bool) (result Result, fa
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
+	if matches, err := unchanged(); err != nil || !matches {
+		return result, errors.Join(errors.New("swversion changed before installation"), err)
+	}
 	if err := service.Install(ctx, packagePath); err != nil {
 		return result, errors.Join(err, restore())
 	}
-	current, err := durable.Read(service.VersionFile, 128)
-	if err != nil || !bytes.Equal(current, old) {
-		return result, errors.Join(errors.New("run.sh must leave swversion to the updater"), restore())
+	if matches, err := unchanged(); err != nil || !matches {
+		return result, errors.Join(errors.New("run.sh must leave swversion to the updater"), err, restore())
 	}
 	if err := write(service.VersionFile, candidate.Installed(old), info.Mode(), uid, gid); err != nil {
 		return result, errors.Join(err, restore())
