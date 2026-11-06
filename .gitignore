@@ -1,0 +1,5 @@
+.cache/
+dist/
+*.test
+coverage.out
+*.age

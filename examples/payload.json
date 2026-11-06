@@ -1,0 +1,12 @@
+{
+  "product": "cpguard",
+  "version": "5.89.00",
+  "sequence": 1042,
+  "issued_at": "2026-11-05T06:00:00Z",
+  "expires_at": "2026-11-12T06:00:00Z",
+  "file": {
+    "url": "https://cdn.example.invalid/cpguard/5.89.00/cpguard-5.89.00.tar.gz",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "size": 12345678
+  }
+}
