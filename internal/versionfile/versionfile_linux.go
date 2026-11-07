@@ -258,15 +258,17 @@ func (file *File) Write(name string, data []byte, mode os.FileMode, uid, gid int
 	}
 	temporaryInfo, err := temporary.Stat()
 	if err != nil {
-		return errors.Join(err, temporary.Close())
+		closeErr := temporary.Close()
+		removeErr := unix.Unlinkat(int(root.Fd()), temporaryName, 0)
+		if errors.Is(removeErr, unix.ENOENT) {
+			removeErr = nil
+		}
+		return errors.Join(err, closeErr, removeErr)
 	}
 	defer func() {
 		failure = errors.Join(failure, temporary.Close(), removeTemporary(root, temporaryName, temporaryInfo))
 	}()
 	if _, err := temporary.Write(data); err != nil {
-		return err
-	}
-	if err := temporary.Sync(); err != nil {
 		return err
 	}
 	if err := temporary.Chown(uid, gid); err != nil {

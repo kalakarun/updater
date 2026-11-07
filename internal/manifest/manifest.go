@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/url"
-	"regexp"
 	"time"
 
 	"cpguard/updater/internal/release"
@@ -17,8 +16,6 @@ import (
 
 const MaxBytes = 262144
 const TimeLayout = "2006-01-02T15:04:05Z"
-
-var digestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 type Envelope struct {
 	Payload   string `json:"payload"`
@@ -85,7 +82,7 @@ func Parse(data []byte, now time.Time, validateURL func(string) error) (Payload,
 	if !now.Before(expires) || issued.After(now.Add(5*time.Minute)) {
 		return payload, errors.New("metadata expired or issued more than five minutes in the future")
 	}
-	if !digestPattern.MatchString(payload.File.SHA256) || payload.File.Size <= 0 || payload.File.Size > release.MaxArchiveBytes {
+	if !release.ValidSHA256(payload.File.SHA256) || payload.File.Size <= 0 || payload.File.Size > release.MaxArchiveBytes {
 		return payload, errors.New("invalid archive SHA-256 or size")
 	}
 	if err := HTTPS(payload.File.URL); err != nil {

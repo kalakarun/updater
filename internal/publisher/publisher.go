@@ -10,7 +10,6 @@ import (
 	"errors"
 	"io"
 	"os"
-	"path/filepath"
 	"time"
 
 	"cpguard/updater/internal/durable"
@@ -64,10 +63,10 @@ func Decrypt(encrypted []byte, passphrase string) (ed25519.PrivateKey, error) {
 		return nil, err
 	}
 	data, err := io.ReadAll(io.LimitReader(reader, 4097))
+	defer clear(data)
 	if err != nil {
 		return nil, err
 	}
-	defer clear(data)
 	if len(data) > 4096 {
 		return nil, errors.New("decrypted key exceeds limit")
 	}
@@ -84,18 +83,40 @@ func Decrypt(encrypted []byte, passphrase string) (ed25519.PrivateKey, error) {
 
 func Make(archivePath, address, version string, sequence uint64, now time.Time, validity time.Duration) (manifest.Payload, error) {
 	payload := manifest.Payload{Product: "cpguard", Version: version, Sequence: sequence, IssuedAt: now.UTC().Format(manifest.TimeLayout), ExpiresAt: now.Add(validity).UTC().Format(manifest.TimeLayout), File: manifest.File{URL: address}}
-	file, err := os.Open(archivePath)
+	initial, err := os.Lstat(archivePath)
+	if err != nil {
+		return payload, err
+	}
+	if !initial.Mode().IsRegular() || initial.Size() <= 0 || initial.Size() > release.MaxArchiveBytes {
+		return payload, errors.New("archive must be a nonempty regular file within size limits")
+	}
+	file, err := durable.OpenRegular(archivePath)
 	if err != nil {
 		return payload, err
 	}
 	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil {
+		return payload, err
+	}
+	if !os.SameFile(initial, opened) || initial.Size() != opened.Size() || !initial.ModTime().Equal(opened.ModTime()) {
+		return payload, errors.New("archive changed before hashing")
+	}
 	hasher := sha256.New()
 	length, err := io.Copy(hasher, io.LimitReader(file, release.MaxArchiveBytes+1))
 	if err != nil {
 		return payload, err
 	}
-	if length <= 0 || length > release.MaxArchiveBytes {
-		return payload, errors.New("archive length outside limits")
+	current, err := file.Stat()
+	if err != nil {
+		return payload, err
+	}
+	pathInfo, err := os.Lstat(archivePath)
+	if err != nil {
+		return payload, err
+	}
+	if length != initial.Size() || !os.SameFile(initial, current) || !os.SameFile(initial, pathInfo) || !pathInfo.Mode().IsRegular() || initial.Size() != current.Size() || initial.Size() != pathInfo.Size() || !initial.ModTime().Equal(current.ModTime()) || !initial.ModTime().Equal(pathInfo.ModTime()) {
+		return payload, errors.New("archive changed while hashing")
 	}
 	payload.File.Size = length
 	payload.File.SHA256 = hex.EncodeToString(hasher.Sum(nil))
@@ -121,19 +142,5 @@ func Renew(previous []byte, private ed25519.PrivateKey, sequence uint64, now tim
 }
 
 func WriteNew(name string, data []byte) error {
-	file, err := os.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	if _, err := file.Write(data); err != nil {
-		return err
-	}
-	if err := file.Sync(); err != nil {
-		return err
-	}
-	if err := file.Close(); err != nil {
-		return err
-	}
-	return durable.SyncDir(filepath.Dir(name))
+	return durable.WriteNew(name, data, 0600)
 }

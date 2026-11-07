@@ -3,7 +3,7 @@ package archive
 import (
 	"archive/tar"
 	"compress/gzip"
-	"cpguard/updater/internal/capacity"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +11,8 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+
+	"cpguard/updater/internal/capacity"
 )
 
 type Limits struct {
@@ -23,8 +25,15 @@ type Limits struct {
 var DefaultLimits = Limits{FileBytes: 1073741824, TotalBytes: 4294967296, Entries: 100000, PathBytes: 4096}
 
 func Extract(source io.Reader, destination string, limits Limits) error {
+	return ExtractContext(context.Background(), source, destination, limits)
+}
+
+func ExtractContext(ctx context.Context, source io.Reader, destination string, limits Limits) (failure error) {
 	if limits.FileBytes < 1 || limits.TotalBytes < 1 || limits.Entries < 1 || limits.PathBytes < 1 {
 		return errors.New("invalid extraction limits")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if err := os.Mkdir(destination, 0700); err != nil {
 		return err
@@ -32,7 +41,7 @@ func Extract(source io.Reader, destination string, limits Limits) error {
 	complete := false
 	defer func() {
 		if !complete {
-			_ = os.RemoveAll(destination)
+			failure = errors.Join(failure, os.RemoveAll(destination))
 		}
 	}()
 	root, err := os.OpenRoot(destination)
@@ -40,17 +49,21 @@ func Extract(source io.Reader, destination string, limits Limits) error {
 		return err
 	}
 	defer root.Close()
-	compressed, err := gzip.NewReader(source)
+	compressed, err := gzip.NewReader(contextReader{ctx: ctx, source: source})
 	if err != nil {
 		return err
 	}
 	defer compressed.Close()
-	reader := tar.NewReader(compressed)
+	decoded := contextReader{ctx: ctx, source: compressed}
+	reader := tar.NewReader(decoded)
 	seen := map[string]bool{}
 	var total int64
 	var entries int
 	installer := false
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		header, err := reader.Next()
 		if err == io.EOF {
 			break
@@ -97,14 +110,11 @@ func Extract(source io.Reader, destination string, limits Limits) error {
 		written, copyErr := io.CopyN(file, reader, header.Size)
 		syncErr := file.Sync()
 		closeErr := file.Close()
-		if copyErr != nil || written != header.Size {
-			return errors.New("truncated archive entry")
+		if copyErr == nil && written != header.Size {
+			copyErr = io.ErrUnexpectedEOF
 		}
-		if syncErr != nil {
-			return syncErr
-		}
-		if closeErr != nil {
-			return closeErr
+		if err := errors.Join(copyErr, syncErr, closeErr); err != nil {
+			return fmt.Errorf("extract %q: %w", name, err)
 		}
 		if name == "run.sh" {
 			installer = true
@@ -113,7 +123,7 @@ func Extract(source io.Reader, destination string, limits Limits) error {
 	if !installer {
 		return errors.New("archive missing regular top-level run.sh")
 	}
-	tail, err := io.ReadAll(io.LimitReader(compressed, 1048577))
+	tail, err := io.ReadAll(io.LimitReader(decoded, 1048577))
 	if err != nil {
 		return err
 	}
@@ -125,8 +135,27 @@ func Extract(source io.Reader, destination string, limits Limits) error {
 			return errors.New("nonzero data after tar terminator")
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	complete = true
 	return nil
+}
+
+type contextReader struct {
+	ctx    context.Context
+	source io.Reader
+}
+
+func (reader contextReader) Read(data []byte) (int, error) {
+	if err := reader.ctx.Err(); err != nil {
+		return 0, err
+	}
+	read, err := reader.source.Read(data)
+	if err == nil {
+		err = reader.ctx.Err()
+	}
+	return read, err
 }
 
 func SafeName(name string) bool {

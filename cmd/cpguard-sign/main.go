@@ -29,6 +29,7 @@ func passphrase(confirm bool) ([]byte, error) {
 	password, err := term.ReadPassword(int(os.Stdin.Fd()))
 	fmt.Fprintln(os.Stderr)
 	if err != nil {
+		clear(password)
 		return nil, err
 	}
 	if confirm {
@@ -135,5 +136,11 @@ func run(arguments []string) error {
 			return err
 		}
 	}
-	return publisher.WriteNew(*output, encoded)
+	if err := publisher.WriteNew(*output, encoded); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(os.Stdout, string(encoded)); err != nil {
+		return fmt.Errorf("signed JSON saved to %q but printing failed: %w", *output, err)
+	}
+	return nil
 }

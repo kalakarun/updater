@@ -5,6 +5,8 @@ import (
 	"os"
 )
 
+func openRegular(name string) (*os.File, error) { return os.Open(name) }
+
 func SyncDir(string) error             { return nil }
 func Ownership(os.FileInfo) (int, int) { return -1, -1 }
 func Protected(string, bool) error {

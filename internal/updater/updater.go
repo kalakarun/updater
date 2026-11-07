@@ -151,7 +151,7 @@ func (service Service) Run(ctx context.Context, install bool) (result Result, fa
 		return result, err
 	}
 	packagePath := filepath.Join(temporary, "package")
-	extractErr := archive.Extract(file, packagePath, archive.DefaultLimits)
+	extractErr := archive.ExtractContext(ctx, file, packagePath, archive.DefaultLimits)
 	closeErr := file.Close()
 	if extractErr != nil || closeErr != nil {
 		return result, errors.Join(extractErr, closeErr)

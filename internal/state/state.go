@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"regexp"
 
 	"cpguard/updater/internal/durable"
 	"cpguard/updater/internal/manifest"
+	"cpguard/updater/internal/release"
 	"cpguard/updater/internal/strictjson"
 )
 
@@ -15,8 +15,6 @@ type State struct {
 	Sequence      uint64 `json:"sequence"`
 	PayloadSHA256 string `json:"payload_sha256"`
 }
-
-var digestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func Initialize(name string) error {
 	if _, err := os.Lstat(name); !errors.Is(err, os.ErrNotExist) {
@@ -34,7 +32,7 @@ func Load(name string) (State, error) {
 	if err := strictjson.Decode(data, &current, "sequence", "payload_sha256"); err != nil {
 		return current, err
 	}
-	if (current.Sequence == 0 && current.PayloadSHA256 != "") || (current.Sequence > 0 && !digestPattern.MatchString(current.PayloadSHA256)) {
+	if (current.Sequence == 0 && current.PayloadSHA256 != "") || (current.Sequence > 0 && !release.ValidSHA256(current.PayloadSHA256)) {
 		return current, errors.New("corrupted sequence state")
 	}
 	return current, nil
@@ -45,7 +43,7 @@ func Accept(name string, verified manifest.Verified) error {
 	if err != nil {
 		return err
 	}
-	if verified.Payload.Sequence == 0 || !digestPattern.MatchString(verified.Digest) {
+	if verified.Payload.Sequence == 0 || !release.ValidSHA256(verified.Digest) {
 		return errors.New("invalid verified metadata")
 	}
 	if verified.Payload.Sequence < current.Sequence {

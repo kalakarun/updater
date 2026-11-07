@@ -19,7 +19,6 @@ type bounded struct {
 	mu        sync.Mutex
 	writer    io.Writer
 	remaining int
-	output    []byte
 	truncated bool
 }
 
@@ -32,8 +31,7 @@ func (buffer *bounded) Write(data []byte) (int, error) {
 		buffer.truncated = true
 	}
 	buffer.remaining -= len(data)
-	buffer.output = append(buffer.output, data...)
-	if buffer.writer != nil {
+	if len(data) > 0 && buffer.writer != nil {
 		if _, err := buffer.writer.Write(data); err != nil {
 			return 0, err
 		}

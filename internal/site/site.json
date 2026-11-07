@@ -1,5 +1,5 @@
 {
   "key_a": "1739aSwmkQuNTYH77tI7kvI/kywTWwkj8LP3Q7a3bpE=",
-  "metadata_url": "https://raw.githubusercontent.com/kalakarun/uptest/main/cpguard/updates.json",
-  "allowed_cdn_hosts": ["raw.githubusercontent.com"]
+  "metadata_url": "https://updates.opsshield.com/cpguard/updates.json",
+  "allowed_cdn_hosts": ["repo.opsshield.com"]
 }

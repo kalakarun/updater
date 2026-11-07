@@ -5,12 +5,12 @@
 Edit `internal/site/site.json` before the production build:
 
 - `key_a`: the single base64-encoded 32-byte Ed25519 public key.
-- `metadata_url`: currently the GitHub test URL `https://raw.githubusercontent.com/kalakarun/uptest/main/cpguard/updates.json`; replace it with the confirmed production URL before deployment.
-- `allowed_cdn_hosts`: actual archive hostnames only, without schemes, ports, or paths.
+- `metadata_url`: `https://updates.opsshield.com/cpguard/updates.json`, which must directly serve the signed JSON envelope with HTTP 200.
+- `allowed_cdn_hosts`: `["repo.opsshield.com"]`; archive hostnames only, without schemes, ports, or paths.
 
 These values are embedded in the updater binaries, not accepted from runtime flags or downloaded JSON. The key_b field has been removed and is rejected as unknown. Private key A and its passphrase must never enter the repository, binaries, or download servers. An empty development key or host list prevents production operations.
 
-The current configuration still trusts the supplied development public key and allows raw.githubusercontent.com. These settings were not changed by the source cleanup and must be reviewed before production deployment.
+The current configuration preserves the supplied public key A and no longer allows GitHub archive hosts. The archive URL is carried inside signed metadata, not `site.json`; use `https://repo.opsshield.com/latest/app.tar.gz` when signing. Confirm that the preserved public key matches the intended publisher key before production deployment. Both endpoints must return content directly without redirects or content encoding. Rebuild and securely redistribute both updater binaries after changing this embedded configuration; preserve existing client state.
 
 ### Updater source files
 
@@ -56,12 +56,16 @@ Only signatures matching key A are accepted. No three-key root ceremony or multi
 Build one tar.gz containing a regular run.sh at the top level and all required OS/CPU files. Choose a version and a publisher sequence greater than all previously published sequences. Keep a release ledger; the tool does not allocate global sequence numbers.
 
 ```text
-cpguard-sign make --archive RELEASE.tar.gz --url CONFIRMED_HTTPS_ARCHIVE_URL --version 5.89.00 --sequence 1042 --key key-a.age --out update_check.json
+cpguard-sign make --archive RELEASE.tar.gz --url https://repo.opsshield.com/latest/app.tar.gz --version 5.89.00 --sequence 1042 --key key-a.age --out update_check.json
 ```
 
-This hashes the archive, records its exact size, constructs the payload, signs it, and checks its own signature. Default validity is seven days; `--valid-for 24h` can shorten it. Existing output files are never overwritten.
+This hashes a bounded, nonempty regular archive, records its exact size, constructs the payload, signs it, and checks its own signature. Observable identity, size or modification-time changes during hashing are rejected; keep release inputs in a private directory and do not modify them concurrently. Default validity is seven days; `--valid-for 24h` can shorten it. Existing output files are never overwritten.
 
-Upload the exact archive bytes to the signed URL first. Then replace update_check.json atomically on the metadata server. Do not edit a signed payload or change the archive after signing. Automated uploading/publishing is outside this local tool.
+After successfully saving `--out`, both `make` and `renew` print the complete signed JSON envelope to stdout, followed by a newline. No separate `cat` command is needed. Passphrase prompts and errors remain on stderr; private keys and passphrases are never printed. If displaying the JSON fails after saving, the command can return nonzero with the complete output file already present; inspect that file rather than overwriting it or regenerating keys.
+
+Key and metadata outputs are written to private same-directory temporary files, synced and then published using an atomic, no-overwrite hard link. Use a private local directory on a filesystem supporting hard links and directory sync. A failure before publication leaves no partial final file. A cleanup or directory-sync failure after publication can return an error with a complete final file present; inspect that file before retrying rather than deleting or overwriting it blindly. Key generation's private and public files are separate publications, not one multi-file transaction.
+
+Make the exact archive bytes available at the signed URL first. Then publish the generated envelope as `updates.json` at `https://updates.opsshield.com/cpguard/updates.json`; the local output filename can differ. Do not edit a signed payload or change the archive after signing. Automated uploading/publishing is outside this local tool. Because `/latest/app.tar.gz` is mutable, ensure caches serve the signed archive before publishing its metadata, and purge stale cached metadata after publication. Cache mismatches fail closed; do not add cache-busting queries, redirect handling or hash bypasses.
 
 ## Renew before expiry
 
@@ -70,6 +74,8 @@ cpguard-sign renew --in update_check.json --sequence 1043 --key key-a.age --out 
 ```
 
 Renew verifies the previous envelope with key A, preserves version/URL/hash/size, increases the sequence, and refreshes dates. Renew before expiry and use the same key that signed the input. If metadata has already expired, use make again against the reviewed original archive with a higher sequence. Metadata signed by any other key is rejected by the updater.
+
+To migrate old GitHub archive metadata to `https://repo.opsshield.com/latest/app.tar.gz`, use `make` with that new URL and a higher sequence. `renew` preserves the old archive URL, which the new host allowlist rejects.
 
 Some operator must renew metadata even when there is no new application release. Expired metadata stops updates. There is no separate renewal signing role.
 

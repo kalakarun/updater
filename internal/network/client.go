@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"syscall"
 	"time"
 
 	"cpguard/updater/internal/strictjson"
@@ -115,10 +116,7 @@ func (client *Client) DownloadFile(address string, maxLength int64) ([]byte, err
 			}
 			return data, nil
 		}
-		var status *HTTPError
-		var transportError net.Error
-		retry := errors.As(last, &transportError) || (errors.As(last, &status) && (status.StatusCode == 429 || status.StatusCode >= 500))
-		if !retry || attempt == 2 {
+		if !retryable(last) || attempt == 2 {
 			break
 		}
 		select {
@@ -128,6 +126,21 @@ func (client *Client) DownloadFile(address string, maxLength int64) ([]byte, err
 		}
 	}
 	return nil, last
+}
+
+func retryable(failure error) bool {
+	if errors.Is(failure, context.Canceled) || errors.Is(failure, context.DeadlineExceeded) {
+		return false
+	}
+	var status *HTTPError
+	if errors.As(failure, &status) {
+		return status.StatusCode == 429 || (status.StatusCode >= 500 && status.StatusCode <= 599)
+	}
+	if errors.Is(failure, io.EOF) || errors.Is(failure, io.ErrUnexpectedEOF) || errors.Is(failure, syscall.ECONNRESET) || errors.Is(failure, syscall.ECONNABORTED) || errors.Is(failure, syscall.EPIPE) {
+		return true
+	}
+	var transportError net.Error
+	return errors.As(failure, &transportError) && (transportError.Timeout() || transportError.Temporary())
 }
 
 func (client *Client) Archive(address, destination string, length int64, digest []byte) (result error) {

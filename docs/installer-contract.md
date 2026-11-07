@@ -12,6 +12,7 @@ The script must:
 
 - Detect the host OS and CPU and install the appropriate files from the single universal archive.
 - Return zero only after all installation work succeeds; return nonzero on any failure.
+- Run without user input, passwords, confirmations or a controlling terminal. The updater does not connect script stdin; the script must use appropriate unattended options for its OS-specific tools and must not open `/dev/tty`.
 - Leave `/opt/cpguard/app/setup/swversion` to the updater.
 - Keep installer output free of secrets and within the documented log limits.
 - Complete within ten minutes and avoid detached/background installation work.

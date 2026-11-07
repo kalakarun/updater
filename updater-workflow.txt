@@ -1,0 +1,607 @@
+CPGUARD UPDATER - COMPLETE BUILD, PUBLISHING AND CLIENT WORKFLOW
+Updated: 2026-11-07
+
+This is an operating guide, not a shell script. Run the relevant command blocks
+in order; do not execute this entire text file. Stop when a required command
+fails. Never continue by disabling verification or deleting security state.
+
+The commands below use Bash on your current Linux test server, as root, with
+source at /etc/updateGoscript. Production signing belongs on the publisher's
+trusted workstation, not on customer or download servers. Adjust publisher
+paths for that workstation; Go builds the publisher tool for its native OS/CPU.
+
+CONTENTS
+1. Roles and files
+2. Build the publisher tool
+3. Generate Key A (first setup only)
+4. Configure embedded public trust and URLs
+5. Build both static customer binaries
+6. Sign a release
+7. Publish the archive and signed JSON
+8. Provision a client once using the initial installer
+9. Unattended client cron operation
+10. Manual diagnostics and result logs
+10a. Fix a nested installer when only the tar file exists
+11. Renew metadata BEFORE expiry
+12. Recover when metadata has ALREADY expired
+13. Safety rules and troubleshooting
+
+
+1. ROLES AND FILES
+==================
+
+Publisher/operator:
+- Builds cpguard-sign and the two customer updater binaries.
+- Holds the encrypted private Key A and its passphrase.
+- Runs keygen once, make for releases, and renew before metadata expires.
+- Publishes signed JSON and the exact corresponding archive.
+- Maintains the release/sequence ledger and protected key backups.
+
+Customer initial installer (runs as root once per new installation):
+- Receives both static updater binaries through trusted distribution.
+- Selects the matching binary for the host CPU.
+- Installs it in a root-protected path, provisions application paths/state,
+  and installs the agreed root cron entry.
+- Does not receive a private signing key, passphrase or cpguard-sign.
+
+Customer cron (runs as root, unattended):
+- Calls the already-installed updater with apply, with no questions or input.
+- Never generates keys, signs or renews metadata, or resets client state.
+
+Two shipped customer binaries:
+  cpguard-updater-amd64  : GOOS=linux, GOARCH=amd64, for x86_64 hosts
+  cpguard-updater-arm64  : GOOS=linux, GOARCH=arm64, for ARM64 hosts
+
+Both use CGO_ENABLED=0. Ship both in the distribution; each host executes only
+its matching binary. cpguard-sign is an additional publisher-only executable.
+cpguard-audit is a build-time tool, not a customer runtime dependency.
+
+The current updater uses real production application paths:
+  Version: /opt/cpguard/app/setup/swversion
+  State:   /var/lib/cpguard-updater
+  Log:     /opt/cpguard/logs/install_log
+
+The old manual-test profile and dummy package helpers have been removed.
+
+
+2. BUILD THE PUBLISHER TOOL
+==========================
+
+Run on your current Linux test/publisher server:
+
+  cd /etc/updateGoscript || exit 1
+  export GOTOOLCHAIN=go1.27.3
+  umask 077
+  PUBLISHER_DIR=/root/cpguard-publisher-test
+  mkdir -p dist
+  go version
+  go mod verify
+
+  CGO_ENABLED=0 go build -mod=readonly -buildvcs=false -trimpath \
+    -ldflags="-s -w -buildid=" \
+    -o dist/cpguard-sign ./cmd/cpguard-sign
+
+Use Go 1.27.3 as pinned by this project. Build the whole command package,
+not an individual main.go. Continue only if the commands succeed.
+
+If you open another terminal later, set the working directory, GOTOOLCHAIN
+and PUBLISHER_DIR again. No Go compiler or source tree is needed on clients.
+
+On the production Mac, the native publisher build command above is the same,
+but use your actual project directory and a private directory under your home
+instead of the Linux /etc and /root paths. Do not copy private keys into source.
+
+
+3. GENERATE KEY A - FIRST SETUP ONLY
+==================================
+
+If you already have the matching key-a.age and key-a.public.txt, SKIP keygen
+and reuse them. Never delete/regenerate Key A for each release or renewal.
+If the private key exists but its public key is missing or does not match the
+configured trust, stop and resolve that discrepancy; do not silently replace it.
+
+For a genuinely new publisher setup:
+
+  install -d -m 700 "$PUBLISHER_DIR"
+
+  ./dist/cpguard-sign keygen \
+    --out "$PUBLISHER_DIR/key-a.age" \
+    --public "$PUBLISHER_DIR/key-a.public.txt"
+
+Enter and confirm a strong, unique passphrase of at least 16 bytes.
+This prompt is PUBLISHER-ONLY. It never runs on a customer cron invocation.
+
+Files:
+  key-a.age        : age-encrypted private key; keep secret and backed up
+  key-a.public.txt : base64 public key; safe to embed in updater configuration
+
+Display only the public key:
+
+  cat "$PUBLISHER_DIR/key-a.public.txt"
+
+The public key is also printed by keygen. Copy it exactly, including any final
+equals sign. This is an application-signing key, not an SSH/SFTP/PuTTY key.
+The tools refuse to overwrite existing output files.
+
+
+4. CONFIGURE EMBEDDED PUBLIC TRUST AND URLS
+=========================================
+
+Before building customer binaries, edit:
+  internal/site/site.json
+
+For your current OPSShield endpoints, its structure is:
+
+  {
+    "key_a": "COPY_YOUR_MATCHING_PUBLIC_KEY_HERE",
+    "metadata_url": "https://updates.opsshield.com/cpguard/updates.json",
+    "allowed_cdn_hosts": ["repo.opsshield.com"]
+  }
+
+Replace the public-key placeholder with the output from keygen, or keep the
+already-configured matching public key when reusing existing Key A.
+The existing public key A is unchanged by this endpoint migration. Verify its
+publisher ownership before production deployment. The metadata endpoint must
+serve the signed JSON directly with HTTP 200, not a directory page or redirect.
+
+These settings are compiled into the updater. Both architecture builds must
+use the same reviewed configuration. Changing site.json requires rebuilding
+and trusted redistribution of both binaries.
+
+Never include the private key or passphrase in site.json, client binaries,
+source control, the release archive, a CDN or customer servers.
+Replacing the public key for already-deployed clients requires independently
+trusted updater distribution; generating a fresh key is not automatic rotation.
+
+
+5. BUILD BOTH STATIC CUSTOMER BINARIES
+=====================================
+
+Linux amd64:
+
+  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOAMD64=v1 \
+    go build -mod=readonly -buildvcs=false -trimpath \
+    -ldflags="-s -w -buildid=" \
+    -o dist/cpguard-updater-amd64 ./cmd/cpguard-updater
+
+Linux arm64:
+
+  CGO_ENABLED=0 GOOS=linux GOARCH=arm64 GOARM64=v8.0 \
+    go build -mod=readonly -buildvcs=false -trimpath \
+    -ldflags="-s -w -buildid=" \
+    -o dist/cpguard-updater-arm64 ./cmd/cpguard-updater
+
+Checks on the build machine:
+
+  go vet ./...
+
+  CGO_ENABLED=0 go run ./cmd/cpguard-audit \
+    dist/cpguard-updater-amd64 \
+    dist/cpguard-updater-arm64
+
+  sha256sum dist/cpguard-updater-amd64 dist/cpguard-updater-arm64
+
+The ELF audit must report static:true and the expected machine for both files.
+Per-command GOOS/GOARCH settings above leave later go run commands native.
+The checksum command here is for Linux; on macOS use shasum -a 256 instead.
+Build/vet/static checks do not replace runtime acceptance on both architectures.
+No persistent automated test files remain in this production-only source tree.
+
+Only the following are customer updater artifacts:
+  dist/cpguard-updater-amd64
+  dist/cpguard-updater-arm64
+
+
+6. SIGN A RELEASE
+=================
+
+Build and review one universal tar.gz with a REGULAR run.sh at its top level.
+run.sh must select the correct application files for the host OS/CPU.
+The following input prompts run ONLY on the publisher, never on the client.
+
+  read -r -p "Local tar.gz path: " ARCHIVE
+  ARCHIVE_URL=https://repo.opsshield.com/latest/app.tar.gz
+  read -r -p "Actual package version, major.minor.patch: " RELEASE_VERSION
+  read -r -p "Sequence greater than every published sequence: " RELEASE_SEQUENCE
+
+  SIGNED_JSON="$PUBLISHER_DIR/updates-${RELEASE_SEQUENCE}.json"
+
+  ./dist/cpguard-sign make \
+    --archive "$ARCHIVE" \
+    --url "$ARCHIVE_URL" \
+    --version "$RELEASE_VERSION" \
+    --sequence "$RELEASE_SEQUENCE" \
+    --key "$PUBLISHER_DIR/key-a.age" \
+    --valid-for 168h \
+    --out "$SIGNED_JSON"
+
+Enter the private-key passphrase when prompted. After the file is successfully
+saved, make automatically prints the complete signed JSON to the terminal.
+To display its saved location:
+
+  printf 'Signed JSON: %s\n' "$SIGNED_JSON"
+
+make calculates the exact archive size and SHA-256, constructs the payload,
+signs it and self-checks the signature. It does not approve run.sh safety,
+allocate global sequence numbers, publish files or check installed versions.
+
+Use a truthful application version. The sequence is a separate positive
+integer that must exceed EVERY sequence previously published, including renewals.
+Keep a publisher ledger with version, sequence, URL, hash, size, metadata dates
+and output filename. Do not rely solely on one client's last accepted sequence.
+
+The output filename must be new. Maximum validity is 168h (seven days).
+Shorter whole-second durations, such as 24h, are allowed.
+
+
+7. PUBLISH THE ARCHIVE AND SIGNED JSON
+====================================
+
+1. Make the exact signed archive available at ARCHIVE_URL first.
+2. If already hosted there with those exact bytes, no archive upload is needed.
+3. Copy the ENTIRE generated JSON to your configured metadata location.
+4. Publish the JSON last. Do not edit its payload or signature afterward.
+
+Publish the generated signed JSON as updates.json so the updater fetches:
+  https://updates.opsshield.com/cpguard/updates.json
+
+The archive URL to put in the signed payload is:
+  https://repo.opsshield.com/latest/app.tar.gz
+
+Only repo.opsshield.com is allowed for archives. GitHub archive hosts are no
+longer allowed. Both endpoints must directly return HTTP 200 without redirects,
+content encoding or authentication challenges.
+
+Because /latest/app.tar.gz is mutable, deploy the exact reviewed archive first
+and ensure caches serve it before publishing its signed metadata. Purge stale
+metadata caches after publication. A mismatch is rejected safely; never bypass
+hash checks or add query strings to work around caches.
+
+Existing clients need trusted replacement of their matching updater binary
+to change the embedded metadata URL/allowlist. Preserve their sequence state;
+do not run bootstrap again simply because the binary or endpoints changed.
+
+Archive bytes must match the local file signed in step 6. Keep the artifact
+immutable after signing. Never upload private keys or passphrases.
+Publisher output files are private mode 0600; publish only the intended public
+JSON/archive through your publishing method, not the private publisher directory.
+
+
+8. PROVISION A CLIENT ONCE USING THE INITIAL INSTALLER
+====================================================
+
+This section is a REFERENCE deployment pattern for your initial installer.
+It uses /usr/local/sbin/cpguard-updater as the installed root-owned path and an
+hourly cron example. These are example deployment choices, not hardcoded paths
+in the updater. Integrate the chosen path/schedule into your initial installer.
+Nothing in this guide has been executed on a remote server.
+
+The initial installer runs as root, with no interactive questions. It must:
+- Receive both architecture binaries through independently trusted distribution.
+- Ensure /usr/local/sbin and its ancestors are root-protected, not symlinks,
+  and not writable by cpguard or other unprivileged users.
+- Ensure /opt/cpguard/app/setup/swversion contains the actual installed version.
+- Ensure /opt/cpguard/logs already exists with safe permissions/ownership.
+- Ensure the system cron service is installed and running.
+
+For a test deployment from your current project dist directory:
+
+  cd /etc/updateGoscript || exit 1
+
+  case "$(uname -m)" in
+    x86_64)        SOURCE_BINARY=dist/cpguard-updater-amd64 ;;
+    aarch64|arm64) SOURCE_BINARY=dist/cpguard-updater-arm64 ;;
+    *) echo "Unsupported architecture" >&2; exit 1 ;;
+  esac
+
+  install -o root -g root -m 0755 "$SOURCE_BINARY" \
+    /usr/local/sbin/cpguard-updater
+
+  UPDATER=/usr/local/sbin/cpguard-updater
+  "$UPDATER" version
+
+The distribution contains both binaries; this host installs its matching one
+under a stable executable name. Clients do not need Go, source or cpguard-sign.
+
+Bootstrap is a ONE-TIME initial-installer action, not a cron action:
+
+  if [ -e /var/lib/cpguard-updater ] || [ -L /var/lib/cpguard-updater ]; then
+    printf 'Preserving existing updater state\n'
+  else
+    "$UPDATER" bootstrap </dev/null || exit 1
+  fi
+
+Existing state must be preserved and validated by the updater. Missing,
+malformed, insecure or legacy state must fail closed; do not auto-delete it,
+auto-reset it or silently bootstrap over it. Handle exceptional provisioning
+failures in the initial installer/operations process, not with runtime prompts.
+
+Below /opt, application directories/version/log may be owned by root or the
+local cpguard UID, without group/world write permissions. Symlinks and unsafe
+file types are rejected; version/log hardlinks are rejected. The /opt anchor
+and updater state remain root-protected. Do not blindly chmod/chown the entire
+application tree to make an error disappear.
+
+
+9. UNATTENDED CLIENT CRON OPERATION
+=================================
+
+What does "$UPDATER" apply mean?
+  UPDATER is a shell variable containing the executable path.
+  Quoted "$UPDATER" executes that file safely as one command.
+  apply tells it to verify metadata and install a genuinely newer valid release.
+
+Who runs it?
+  The customer's ROOT cron job. An administrator may run it for diagnostics.
+  The publisher normally runs cpguard-sign, not the client's apply command.
+
+The actual fixed-path cron command in this reference deployment is:
+
+  /usr/local/sbin/cpguard-updater apply </dev/null
+
+It requires NO terminal, key passphrase, user approval or runtime input.
+No argument also defaults to apply, but an explicit apply is clearer for cron.
+Do not call cpguard-sign, keygen, renew or bootstrap from client cron.
+
+Example root system cron file, installed ONCE by the initial installer:
+
+  cat > /etc/cron.d/cpguard-updater <<'EOF'
+SHELL=/bin/sh
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+0 * * * * root /usr/local/sbin/cpguard-updater apply </dev/null
+EOF
+
+  chown root:root /etc/cron.d/cpguard-updater
+  chmod 0644 /etc/cron.d/cpguard-updater
+
+This example runs hourly at minute zero. Select your intended interval once
+in the initial installer. The user field root is required in /etc/cron.d files;
+do not copy that field into a personal crontab entry.
+
+Normal cron behavior:
+- Valid metadata + no newer version: log not available and exit zero.
+- Valid metadata + newer package: download, exact size/hash check, safe extract,
+  run /bin/sh ./run.sh once, record version after success, clean temporary files.
+- Invalid signature, expiry, sequence, hash, URL or other failure: reject/fail
+  nonzero without asking the customer to approve a fallback.
+- Concurrent invocation: protected state lock prevents simultaneous updates;
+  a lock-contention run fails nonzero rather than waiting for user input.
+- A later scheduled run tries again using normal verification and saved state.
+
+run.sh must ALSO be completely non-interactive. It receives no arguments and
+no terminal input from the updater. It must not ask for passwords, sudo,
+confirmation or OS-package prompts, or read /dev/tty. Its own package-manager
+commands must use the appropriate unattended options for that supported OS.
+It must finish within ten minutes and not detach installation children.
+
+Metadata renewal is a PUBLISHER responsibility. The client holds only a public
+key and cannot renew signed metadata. Expired metadata is rejected without a
+prompt; after the publisher publishes fresh valid metadata, the next cron run
+can recover automatically without customer bootstrap, state reset or key input.
+
+No-input operation does not mean ignoring failures. Collect/monitor cron stderr
+and updater errors. An invalid local deployment may require operator repair;
+the updater will not ask questions or weaken security to keep proceeding.
+
+
+10. MANUAL DIAGNOSTICS AND RESULT LOGS
+====================================
+
+On a provisioned client, as root:
+
+  UPDATER=/usr/local/sbin/cpguard-updater
+  "$UPDATER" version
+  "$UPDATER" check </dev/null
+
+check verifies metadata and compares versions without downloading/installing
+the archive. It can advance protected sequence state; it is not read-only.
+
+To trigger the exact cron operation manually, only for an approved release:
+
+  "$UPDATER" apply </dev/null
+
+Inspect status:
+
+  tail -n 20 /opt/cpguard/logs/install_log
+  cat /opt/cpguard/app/setup/swversion
+
+Each normal check/apply attempts to append a UTC result:
+  TIMESTAMP sw-updater update available
+  TIMESTAMP sw-updater not available
+  TIMESTAMP sw-updater success
+  TIMESTAMP sw-updater failed: REASON
+
+version/bootstrap do not write update-result log entries. Failures before log
+setup, including an unsafe/missing log directory, are reported on stderr.
+Installer stdout/stderr is structured console output, not the result log file.
+Keep stderr collection available; do not assume every failure can reach the log.
+
+Your previously reported 58826 means version 5.88.26. Sample 1.0.1 is older and
+correctly reports up_to_date/not available without running its installer.
+Use a disposable environment to test an actual install; do not lower the real
+version or label a dummy archive as a newer real release just to force apply.
+
+
+10a. FIX A NESTED INSTALLER WHEN ONLY THE TAR FILE EXISTS
+=======================================================
+
+If the local file is /etc/updateGoscript/app.tar.gz and listing it shows only
+app/run.sh, there may be no extracted /etc/updateGoscript/app directory at all.
+The updater requires a regular run.sh at the archive root. Do not weaken that
+check or recursively search for arbitrary scripts to execute.
+
+For the inspected test package, whose inner script is only a marker-file test,
+the commands below add a top-level launcher that enters app and calls its
+existing run.sh. Review the real installer and its expected working directory
+before using this approach for production. No installer runs during repacking.
+
+Paste the ENTIRE block. It runs in a separate Bash process; a failed command
+does not exit your current terminal. It never extracts payload paths onto the
+filesystem. It preserves the original archive and refuses to overwrite an
+existing app-fixed.tar.gz. Choose a new output name if that file already exists.
+
+  bash -euo pipefail <<'REPACK' || printf 'Repack failed; original archive unchanged.\n'
+cd /etc/updateGoscript
+WORK=$(mktemp -d "$PWD/.cpguard-repack.XXXXXX")
+trap 'rm -f -- "$WORK/package.tar" "$WORK/run.sh" "$WORK/app-fixed.tar.gz"; rmdir -- "$WORK"' EXIT
+
+gzip -dc app.tar.gz > "$WORK/package.tar"
+cat > "$WORK/run.sh" <<'RUNSH'
+#!/bin/sh
+set -eu
+cd app
+exec /bin/sh ./run.sh
+RUNSH
+chmod 0755 "$WORK/run.sh"
+tar --append --file="$WORK/package.tar" --directory="$WORK" run.sh
+gzip -c "$WORK/package.tar" > "$WORK/app-fixed.tar.gz"
+tar -tzf "$WORK/app-fixed.tar.gz" run.sh
+ln -T -- "$WORK/app-fixed.tar.gz" "$PWD/app-fixed.tar.gz"
+printf 'Created %s\n' "$PWD/app-fixed.tar.gz"
+REPACK
+
+Continue only if the command prints both run.sh and Created followed by the
+new filename. Use /etc/updateGoscript/app-fixed.tar.gz as the local signing
+input. Run make with a globally higher sequence, publish the corrected archive
+bytes at the signed archive URL, then publish the new JSON last. Do not use
+renew for a changed archive, reset state or bootstrap again. No Go rebuild is
+required for this packaging correction.
+
+
+11. RENEW METADATA BEFORE EXPIRY - PUBLISHER ONLY
+==============================================
+
+Use renew while the previous signed JSON is STILL VALID. Schedule publisher
+renewal with enough margin; maximum validity is seven days. This is separate
+from customer cron. Interactive passphrase entry belongs only to the publisher.
+
+renew verifies the previous signature with the same key and checks expiry.
+It preserves product, version, archive URL, hash and size. It increases the
+sequence and refreshes issued_at/expires_at, then signs a new envelope.
+It does NOT read/rehash the archive, upload anything or modify client state.
+
+For migration from old GitHub archive metadata to repo.opsshield.com, use
+make with the new archive URL and a higher sequence instead of renew. Renewal
+would preserve the old URL, which the new archive allowlist rejects.
+
+On the publisher, in a new terminal if needed:
+
+  cd /etc/updateGoscript || exit 1
+  PUBLISHER_DIR=/root/cpguard-publisher-test
+
+  read -r -p "Path to the latest still-valid signed JSON: " PREVIOUS_JSON
+  read -r -p "Sequence greater than every published sequence: " NEXT_SEQUENCE
+
+  RENEWED_JSON="$PUBLISHER_DIR/updates-renewed-${NEXT_SEQUENCE}.json"
+
+  ./dist/cpguard-sign renew \
+    --in "$PREVIOUS_JSON" \
+    --sequence "$NEXT_SEQUENCE" \
+    --key "$PUBLISHER_DIR/key-a.age" \
+    --valid-for 168h \
+    --out "$RENEWED_JSON"
+
+Enter the publisher passphrase. After the file is successfully saved, renew
+automatically prints the complete signed JSON. Its saved location is:
+
+  printf 'Renewed JSON: %s\n' "$RENEWED_JSON"
+
+Publish the entire renewed JSON at the SAME configured metadata location:
+  https://updates.opsshield.com/cpguard/updates.json
+Preserve the previous local files and update your release ledger.
+
+No new archive upload, client rebuild, client key, bootstrap or application
+version change is needed when the key, archive bytes and URLs are unchanged.
+Already-updated clients should still report not available, which is normal.
+
+
+12. RECOVER WHEN METADATA HAS ALREADY EXPIRED - PUBLISHER ONLY
+===========================================================
+
+IMPORTANT: The current renew command intentionally REJECTS expired input.
+Do not attempt to fix that by editing timestamps, changing the system clock,
+resetting client state, disabling expiry or generating a replacement key.
+
+Instead, run make again with the SAME trusted Key A and the original reviewed
+release archive, truthful package version and correct archive URL. Use a new
+globally higher sequence and a fresh output filename. This creates fresh valid
+metadata by recomputing the archive size/hash and signing a new payload.
+
+On the publisher:
+
+  cd /etc/updateGoscript || exit 1
+  PUBLISHER_DIR=/root/cpguard-publisher-test
+
+  read -r -p "Path to original reviewed release archive: " ARCHIVE
+  read -r -p "Exact HTTPS URL serving this reviewed archive: " ARCHIVE_URL
+  read -r -p "Actual unchanged release version: " RELEASE_VERSION
+  read -r -p "Sequence greater than every published sequence: " NEXT_SEQUENCE
+
+  sha256sum "$ARCHIVE"
+  wc -c < "$ARCHIVE"
+
+STOP and compare that hash/size with your trusted release ledger before
+continuing. Do not blindly download and sign unknown bytes from a CDN.
+
+  RECOVERED_JSON="$PUBLISHER_DIR/updates-recovered-${NEXT_SEQUENCE}.json"
+
+  ./dist/cpguard-sign make \
+    --archive "$ARCHIVE" \
+    --url "$ARCHIVE_URL" \
+    --version "$RELEASE_VERSION" \
+    --sequence "$NEXT_SEQUENCE" \
+    --key "$PUBLISHER_DIR/key-a.age" \
+    --valid-for 168h \
+    --out "$RECOVERED_JSON"
+
+Enter the publisher passphrase. After the file is successfully saved, make
+automatically prints the complete signed JSON. Its saved location is:
+
+  printf 'Recovered JSON: %s\n' "$RECOVERED_JSON"
+
+Ensure the original exact archive is available, then publish the complete new
+JSON at the existing metadata location and record it in your release ledger.
+No archive upload is required if those exact bytes are already hosted there.
+If /latest/app.tar.gz has since changed to a newer release, do not point old
+metadata at those different bytes. Sign the actual reviewed current release,
+or use an allowed-host URL still serving the original reviewed archive.
+
+Clients keep their existing version and sequence state. Their next cron run
+accepts a valid higher sequence; it installs only if that real version is newer.
+Clients already at that version simply report not available. Recovery does not
+require customer input, reinstall, bootstrap or any security bypass.
+
+
+13. SAFETY RULES AND TROUBLESHOOTING
+==================================
+
+- A compromised CDN cannot invent a valid signed hash, but it can block or
+  replay downloads within freshness/state limits. No updater is risk-free.
+- Keep clocks accurate on publisher and clients; never change time to bypass
+  metadata expiry. Publisher renewal must occur even without a new app release.
+- Keep the private key off customer/download servers. If it is lost, restore
+  its protected encrypted backup. A different key will not match client trust.
+- A compromised signing key can authorize root code. There is no second-key
+  approval or automatic key recovery in this single-key design.
+- Client cron must never run keygen, make, renew or bootstrap, ask for user
+  approval, fall back to unsigned downloads, or reset security state.
+- Do not store passphrases in command lines, cron entries, source control,
+  release archives or client configuration. This guide does not automate
+  private-key unlocking on the publisher.
+- Keep executable and cron paths root-protected. Application-owned version
+  and logs are mutable status records, not independent tamper-proof evidence.
+- run.sh must leave swversion and its parent directories unchanged. The updater
+  records the version after a successful script exit; exit zero must be truthful.
+- Signature/hash/size/extraction failures prevent installer execution. However,
+  run.sh failure, storage/power loss, version recording or later logging/cleanup
+  errors can occur AFTER application changes. Nonzero does not prove nothing
+  changed. The reduced updater has no automatic application rollback.
+- Installer retries may occur on later cron runs after partial failure. Design
+  run.sh to be safely repeatable and handle partial work without interaction.
+- If a publisher command reports an error, inspect its output path before retry:
+  a late cleanup/directory-sync error can occur after a complete file was
+  published. Do not blindly overwrite files or regenerate keys.
+- Preserve existing state on sync/redeployment. Cleaning source files is not
+  permission to remove client state, installed versions, logs or signing keys.
+- The updater does not itself install cron. Initial installation/provisioning
+  and operational monitoring remain responsibilities of your installer/system.

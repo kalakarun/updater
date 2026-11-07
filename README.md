@@ -19,14 +19,18 @@ Go 1.27.3 is required. From the project root on Linux:
 
 ```sh
 mkdir -p dist
-CGO_ENABLED=0 go build -mod=readonly -trimpath -o dist/cpguard-sign ./cmd/cpguard-sign
-CGO_ENABLED=0 go build -mod=readonly -trimpath -o dist/cpguard-updater ./cmd/cpguard-updater
+CGO_ENABLED=0 go build -mod=readonly -buildvcs=false -trimpath -ldflags="-s -w -buildid=" -o dist/cpguard-sign ./cmd/cpguard-sign
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOAMD64=v1 go build -mod=readonly -buildvcs=false -trimpath -ldflags="-s -w -buildid=" -o dist/cpguard-updater-amd64 ./cmd/cpguard-updater
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 GOARM64=v8.0 go build -mod=readonly -buildvcs=false -trimpath -ldflags="-s -w -buildid=" -o dist/cpguard-updater-arm64 ./cmd/cpguard-updater
 go vet ./...
+CGO_ENABLED=0 go run ./cmd/cpguard-audit dist/cpguard-updater-amd64 dist/cpguard-updater-arm64
 ```
 
 From PowerShell, `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/build.ps1` builds static Linux amd64/arm64 updaters and macOS amd64/arm64 signers, plus module/source inventories, build records and a static ELF audit. No automated tests remain in this production-only source tree; build and static checks are not substitutes for regression tests.
 
-The current `internal/site/site.json` still contains the supplied development public key A and GitHub raw-content endpoints. Review and provision the production settings before deployment. Never put a private signing key or passphrase in the source tree, updater binary or download server.
+The release linker flags remove symbol/DWARF debug information, not TLS or update verification. The audited Go 1.27.3 Linux amd64 release build is about 7.02 MiB. Equivalent byte validators remove the regexp dependency, and installer output is streamed without retaining an unused copy. Other architectures/toolchains can differ. Stripping makes debugger analysis less convenient and does not by itself reduce runtime memory use. The PowerShell build script already uses these flags.
+
+The current `internal/site/site.json` fetches signed metadata from `https://updates.opsshield.com/cpguard/updates.json` and allows archive downloads only from `repo.opsshield.com`. Sign reviewed packages for `https://repo.opsshield.com/latest/app.tar.gz`. The existing public key A is unchanged; independently verify its suitability before production deployment. Never put a private signing key or passphrase in the source tree, updater binary or download server.
 
 ## Update flow
 
@@ -43,3 +47,4 @@ A failing run.sh may already have changed application files; this reduced flow c
 - [run.sh expectations](docs/installer-contract.md)
 - [Remaining information](docs/requirements.md)
 - [Security scope](SECURITY.md)
+- [Audit findings and validation](docs/audit.md)
